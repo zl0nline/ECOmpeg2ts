@@ -13,7 +13,7 @@ on small ARM boards while monitoring many simultaneous streams.
 The BPF object must be built on Linux with a clang that supports the BPF target:
 
 ```sh
-clang -O2 -g -target bpf -c bpf/ecompeg2ts_tc.c -o ecompeg2ts_tc_bpfel.o
+clang -O2 -g -target bpf -I/usr/include/$(uname -m)-linux-gnu -c bpf/ecompeg2ts_tc.c -o ecompeg2ts_tc_bpfel.o
 ```
 
 ## Build The Loader

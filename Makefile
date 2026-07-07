@@ -22,7 +22,7 @@ linux-arm64-tc:
 
 ebpf-object:
 	mkdir -p dist
-	clang -O2 -g -target bpf -c bpf/ecompeg2ts_tc.c -o dist/ecompeg2ts_tc_bpfel.o
+	clang -O2 -g -target bpf -I/usr/include/$$(uname -m)-linux-gnu -c bpf/ecompeg2ts_tc.c -o dist/ecompeg2ts_tc_bpfel.o
 
 clean:
 	rm -rf bin dist
