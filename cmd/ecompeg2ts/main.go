@@ -17,16 +17,17 @@ import (
 
 func main() {
 	var (
+		source        = flag.String("source", "", "input source URL, for example udp://@239.3.1.1:1234 or file:///tmp/a.ts")
 		udpAddr       = flag.String("udp", "", "UDP listen address, for example :1234")
 		multicastAddr = flag.String("multicast", "", "multicast group address, for example 239.10.10.10:1234")
-		iface         = flag.String("iface", "", "network interface for multicast, for example eth0")
+		iface         = flag.String("iface", "", "network interface for multicast, optional")
 		filePath      = flag.String("file", "", "MPEG-TS file to analyze")
 		jsonMode      = flag.Bool("json", false, "emit JSON snapshots instead of the dashboard")
 		interval      = flag.Duration("interval", time.Second, "dashboard or JSON refresh interval")
 	)
 	flag.Parse()
 
-	src, err := openSource(*udpAddr, *multicastAddr, *iface, *filePath)
+	src, err := openSource(*source, *udpAddr, *multicastAddr, *iface, *filePath, flag.Args())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
@@ -77,8 +78,14 @@ func main() {
 	}
 }
 
-func openSource(udpAddr, multicastAddr, iface, filePath string) (*input.Source, error) {
+func openSource(source, udpAddr, multicastAddr, iface, filePath string, args []string) (*input.Source, error) {
+	if source == "" && len(args) == 1 {
+		source = args[0]
+	}
 	set := 0
+	if source != "" {
+		set++
+	}
 	if udpAddr != "" {
 		set++
 	}
@@ -89,7 +96,13 @@ func openSource(udpAddr, multicastAddr, iface, filePath string) (*input.Source, 
 		set++
 	}
 	if set != 1 {
-		return nil, fmt.Errorf("choose exactly one input: --udp, --multicast, or --file")
+		return nil, fmt.Errorf("choose exactly one input: --source, positional source, --udp, --multicast, or --file")
+	}
+	if len(args) > 1 {
+		return nil, fmt.Errorf("expected at most one positional source")
+	}
+	if source != "" {
+		return input.OpenSource(source, iface)
 	}
 	if filePath != "" {
 		return input.OpenFile(filePath)

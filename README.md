@@ -65,6 +65,14 @@ Join a multicast group:
 ecompeg2ts --multicast 239.10.10.10:1234 --iface eth0
 ```
 
+Join a multicast group from an IPTV-style URL. The interface is optional; when
+it is omitted, the OS chooses the multicast interface:
+
+```sh
+ecompeg2ts --source udp://@239.3.1.1:1234
+ecompeg2ts udp://@239.3.1.1:1234
+```
+
 Read a transport stream file:
 
 ```sh
