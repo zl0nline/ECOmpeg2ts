@@ -16,6 +16,7 @@
 #define TS_PACKET_SIZE 188
 #define TS_SYNC_BYTE 0x47
 #define MAX_TS_PACKETS_PER_UDP 8
+#define IPPROTO_UDP 17
 
 static void *(*bpf_map_lookup_elem)(void *map, const void *key) = (void *)1;
 static long (*bpf_map_update_elem)(void *map, const void *key, const void *value, unsigned long long flags) = (void *)2;
