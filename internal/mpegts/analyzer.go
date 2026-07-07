@@ -20,6 +20,7 @@ type PIDStats struct {
 	Scrambled       uint64 `json:"scrambled"`
 	AdaptationOnly  uint64 `json:"adaptation_only"`
 	PayloadPackets  uint64 `json:"payload_packets"`
+	ReservedAFC     uint64 `json:"reserved_afc"`
 
 	lastCC uint8
 	seen   bool
@@ -36,6 +37,7 @@ type Snapshot struct {
 	TEIErrors       uint64     `json:"tei_errors"`
 	Discontinuities uint64     `json:"discontinuities"`
 	Scrambled       uint64     `json:"scrambled"`
+	ReservedAFC     uint64     `json:"reserved_afc"`
 	PIDs            []PIDStats `json:"pids"`
 }
 
@@ -52,6 +54,7 @@ type Analyzer struct {
 	teiErrors       uint64
 	discontinuities uint64
 	scrambled       uint64
+	reservedAFC     uint64
 }
 
 func NewAnalyzer() *Analyzer {
@@ -118,6 +121,7 @@ func (a *Analyzer) Snapshot() Snapshot {
 		TEIErrors:       a.teiErrors,
 		Discontinuities: a.discontinuities,
 		Scrambled:       a.scrambled,
+		ReservedAFC:     a.reservedAFC,
 		PIDs:            pids,
 	}
 }
@@ -164,11 +168,15 @@ func (a *Analyzer) parsePacket(pkt []byte) {
 	if hasPayload {
 		stat.PayloadPackets++
 	}
+	if afc == 0 {
+		a.reservedAFC++
+		stat.ReservedAFC++
+		return
+	}
 	if discontinuity {
 		a.discontinuities++
 		stat.Discontinuities++
-		stat.lastCC = cc
-		stat.seen = true
+		stat.seen = false // reset: next payload packet establishes new CC baseline
 		return
 	}
 	if !hasPayload {
