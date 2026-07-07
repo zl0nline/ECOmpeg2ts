@@ -30,6 +30,27 @@ make linux-arm64
 
 The ARM64 binary will be written to `dist/ecompeg2ts-linux-arm64`.
 
+## Install On Armbian ARM64
+
+Download the `ecompeg2ts-linux-arm64` binary from the latest GitHub release,
+then install it on the target box:
+
+```sh
+chmod +x ecompeg2ts-linux-arm64
+sudo install -m 0755 ecompeg2ts-linux-arm64 /usr/local/bin/ecompeg2ts
+ecompeg2ts --help
+```
+
+Optional systemd service example:
+
+```sh
+sudo cp docs/systemd/ecompeg2ts.service /etc/systemd/system/ecompeg2ts.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now ecompeg2ts
+```
+
+Edit the multicast group, port, and interface in the service before enabling it.
+
 ## Examples
 
 Analyze a UDP stream on all interfaces:

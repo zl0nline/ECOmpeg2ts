@@ -1,0 +1,14 @@
+[Unit]
+Description=ECOmpeg2ts IPTV stream analyzer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/ecompeg2ts --multicast 239.10.10.10:1234 --iface eth0 --json
+Restart=on-failure
+RestartSec=5s
+User=root
+
+[Install]
+WantedBy=multi-user.target
