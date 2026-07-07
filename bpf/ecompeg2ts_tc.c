@@ -19,6 +19,7 @@
  * Larger jumbo-frame UDP payloads are intentionally left for a later benchmark.
  */
 #define MAX_TS_PACKETS_PER_UDP 8
+/* Standard 1500 MTU fits 7 TS packets (1316 bytes). Increase for jumbo frames. */
 #define IPPROTO_UDP 17
 
 static void *(*bpf_map_lookup_elem)(void *map, const void *key) = (void *)1;
@@ -50,77 +51,57 @@ struct {
 	__type(value, struct pid_stats_value);
 } pid_stats SEC(".maps");
 
-static __always_inline int parse_ts_packet(void *packet, void *data_end, __u32 dst_ip, __u16 dst_port)
+static __always_inline void process_ts(unsigned char *p, __u32 dst_ip, __u16 dst_port)
 {
-	if (packet + TS_PACKET_SIZE > data_end)
-		return 0;
-
-	unsigned char *p = packet;
-	if (p[0] != TS_SYNC_BYTE) {
-		struct stream_pid_key sync_key = {
-			.dst_ip = dst_ip,
-			.dst_port = dst_port,
-			.pid = 0xffff,
-		};
-		struct pid_stats_value *sync_stats = bpf_map_lookup_elem(&pid_stats, &sync_key);
-		if (!sync_stats) {
-			struct pid_stats_value init = {};
-			bpf_map_update_elem(&pid_stats, &sync_key, &init, BPF_ANY);
-			sync_stats = bpf_map_lookup_elem(&pid_stats, &sync_key);
-		}
-		if (sync_stats)
-			__sync_fetch_and_add(&sync_stats->sync_losses, 1);
-		return 0;
-	}
-
-	__u8 tei = p[1] & 0x80;
-	__u16 pid = ((__u16)(p[1] & 0x1f) << 8) | p[2];
-	__u8 afc = (p[3] >> 4) & 0x03;
-	__u8 cc = p[3] & 0x0f;
-	__u8 has_adaptation = afc == 2 || afc == 3;
-	__u8 has_payload = afc == 1 || afc == 3;
-	__u8 discontinuity = 0;
-
-	if (afc == 0)
-		return 0;
-
-	if (has_adaptation && p + 6 <= (unsigned char *)data_end) {
-		__u8 af_len = p[4];
-		if (af_len > 0 && p + 5 + af_len <= (unsigned char *)data_end)
-			discontinuity = p[5] & 0x80;
-	}
-
 	struct stream_pid_key key = {
 		.dst_ip = dst_ip,
 		.dst_port = dst_port,
-		.pid = pid,
+		.pid = ((__u16)(p[1] & 0x1f) << 8) | p[2],
 	};
+
+	__u8 tei = p[1] & 0x80;
+	__u8 afc = (p[3] >> 4) & 0x03;
+	__u8 cc = p[3] & 0x0f;
+	__u8 has_adaptation = (afc == 2) || (afc == 3);
+	__u8 has_payload = (afc == 1) || (afc == 3);
+	__u8 discontinuity = 0;
+
+	if (afc == 0)
+		return;
+
+	if (has_adaptation) {
+		__u8 af_len = p[4];
+		if (af_len > 0)
+			discontinuity = p[5] & 0x80;
+	}
+
 	struct pid_stats_value *stats = bpf_map_lookup_elem(&pid_stats, &key);
 	if (!stats) {
 		struct pid_stats_value init = {};
 		bpf_map_update_elem(&pid_stats, &key, &init, BPF_ANY);
 		stats = bpf_map_lookup_elem(&pid_stats, &key);
 		if (!stats)
-			return 0;
+			return;
 	}
 
 	__sync_fetch_and_add(&stats->packets, 1);
+
 	if (tei)
 		__sync_fetch_and_add(&stats->tei_errors, 1);
 
 	if (discontinuity) {
 		__sync_fetch_and_add(&stats->discontinuities, 1);
 		stats->seen = 0;
-		return 0;
+		return;
 	}
 
 	if (!has_payload)
-		return 0;
+		return;
 
 	if (!stats->seen) {
 		stats->last_cc = cc;
 		stats->seen = 1;
-		return 0;
+		return;
 	}
 
 	__u8 expected = (stats->last_cc + 1) & 0x0f;
@@ -135,8 +116,6 @@ static __always_inline int parse_ts_packet(void *packet, void *data_end, __u32 d
 		__sync_fetch_and_add(&stats->drops, missing);
 		stats->last_cc = cc;
 	}
-
-	return 0;
 }
 
 SEC("tc")
@@ -167,17 +146,46 @@ int tc_mpeg2ts(struct __sk_buff *skb)
 	if ((void *)(udph + 1) > data_end)
 		return TC_ACT_OK;
 
-	void *payload = (void *)(udph + 1);
-	void *udp_end = (void *)udph + __builtin_bswap16(udph->len);
-	if (udp_end > data_end)
-		udp_end = data_end;
+	unsigned char *payload = (void *)(udph + 1);
+	__u16 udp_len = __builtin_bswap16(udph->len);
+	if (udp_len < sizeof(*udph))
+		return TC_ACT_OK;
+	__u32 payload_len = udp_len - sizeof(*udph);
+	if (payload_len > TS_PACKET_SIZE * MAX_TS_PACKETS_PER_UDP)
+		payload_len = TS_PACKET_SIZE * MAX_TS_PACKETS_PER_UDP;
 
 #pragma unroll
 	for (int i = 0; i < MAX_TS_PACKETS_PER_UDP; i++) {
-		void *packet = payload + (i * TS_PACKET_SIZE);
-		if (packet + TS_PACKET_SIZE > udp_end)
+		if ((i + 1) * TS_PACKET_SIZE > payload_len)
 			break;
-		parse_ts_packet(packet, udp_end, iph->daddr, udph->dest);
+
+		unsigned char *pkt = payload + (i * TS_PACKET_SIZE);
+
+		/* Explicit bounds check for verifier */
+		if (pkt + 6 > data_end)
+			break;
+		if (pkt[0] != TS_SYNC_BYTE) {
+			struct stream_pid_key sync_key = {
+				.dst_ip = iph->daddr,
+				.dst_port = udph->dest,
+				.pid = 0xffff,
+			};
+			struct pid_stats_value *ss = bpf_map_lookup_elem(&pid_stats, &sync_key);
+			if (!ss) {
+				struct pid_stats_value init = {};
+				bpf_map_update_elem(&pid_stats, &sync_key, &init, BPF_ANY);
+				ss = bpf_map_lookup_elem(&pid_stats, &sync_key);
+			}
+			if (ss)
+				__sync_fetch_and_add(&ss->sync_losses, 1);
+			continue;
+		}
+
+		/* Verify full packet fits before data_end */
+		if (pkt + TS_PACKET_SIZE > data_end)
+			break;
+
+		process_ts(pkt, iph->daddr, udph->dest);
 	}
 
 	return TC_ACT_OK;
