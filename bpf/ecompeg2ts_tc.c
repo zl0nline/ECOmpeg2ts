@@ -15,6 +15,9 @@
 
 #define TS_PACKET_SIZE 188
 #define TS_SYNC_BYTE 0x47
+/* Normal IPTV over 1500 MTU carries up to 7 TS packets (1316 bytes).
+ * Larger jumbo-frame UDP payloads are intentionally left for a later benchmark.
+ */
 #define MAX_TS_PACKETS_PER_UDP 8
 #define IPPROTO_UDP 17
 
