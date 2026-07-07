@@ -10,12 +10,25 @@ import (
 	"os"
 	"os/signal"
 	"sort"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
+	"github.com/zl0nline/ECOmpeg2ts/internal/input"
 )
+
+type stringList []string
+
+func (s *stringList) String() string {
+	return strings.Join(*s, ",")
+}
+
+func (s *stringList) Set(value string) error {
+	*s = append(*s, value)
+	return nil
+}
 
 type objects struct {
 	Program *ebpf.Program `ebpf:"tc_mpeg2ts"`
@@ -60,6 +73,8 @@ func main() {
 	ifaceName := flag.String("iface", "", "interface to attach TC ingress program to, for example eth0")
 	objectPath := flag.String("object", "ecompeg2ts_tc_bpfel.o", "compiled eBPF object path")
 	interval := flag.Duration("interval", time.Second, "dashboard refresh interval")
+	var joins stringList
+	flag.Var(&joins, "join", "multicast source URL to join for IGMP, repeatable, for example udp://@239.3.1.1:1234")
 	flag.Parse()
 
 	if *ifaceName == "" {
@@ -72,6 +87,13 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
+
+	joinConns, err := openJoins(joins, iface)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "join multicast: %v\n", err)
+		os.Exit(2)
+	}
+	defer closeJoins(joinConns)
 
 	spec, err := ebpf.LoadCollectionSpec(*objectPath)
 	if err != nil {
@@ -166,4 +188,38 @@ func ipv4FromKey(v uint32) net.IP {
 
 func ntohs(v uint16) uint16 {
 	return (v << 8) | (v >> 8)
+}
+
+func openJoins(rawSources []string, iface *net.Interface) ([]*net.UDPConn, error) {
+	conns := make([]*net.UDPConn, 0, len(rawSources))
+	for _, raw := range rawSources {
+		spec, err := input.ParseSource(raw)
+		if err != nil {
+			closeJoins(conns)
+			return nil, err
+		}
+		if spec.Scheme != "udp" || !spec.IsMulticast {
+			closeJoins(conns)
+			return nil, fmt.Errorf("--join expects a multicast udp:// source, got %q", raw)
+		}
+		addr, err := net.ResolveUDPAddr("udp", spec.Address)
+		if err != nil {
+			closeJoins(conns)
+			return nil, err
+		}
+		conn, err := net.ListenMulticastUDP("udp", iface, addr)
+		if err != nil {
+			closeJoins(conns)
+			return nil, err
+		}
+		_ = conn.SetReadBuffer(64 * 1024)
+		conns = append(conns, conn)
+	}
+	return conns, nil
+}
+
+func closeJoins(conns []*net.UDPConn) {
+	for _, conn := range conns {
+		_ = conn.Close()
+	}
 }

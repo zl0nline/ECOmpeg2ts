@@ -30,6 +30,16 @@ The command requires root or the relevant BPF/network capabilities:
 sudo ./ecompeg2ts-tc --iface eth0 --object ./ecompeg2ts_tc_bpfel.o
 ```
 
+If no other process has joined the multicast group, the NIC may not receive the
+stream. `ecompeg2ts-tc` can keep a dummy IGMP membership open:
+
+```sh
+sudo ./ecompeg2ts-tc --iface eth0 --object ./ecompeg2ts_tc_bpfel.o --join udp://@239.3.1.1:1234
+```
+
+Repeat `--join` for multiple multicast groups. The dummy socket is only used to
+keep membership alive; MPEG-TS counters still come from the TC/eBPF map.
+
 The first version uses TCX attach, which is available on recent kernels. The
 target Armbian `6.18.37-ophub` kernel should be new enough. If TCX attach fails,
 the fallback will be a later traditional `clsact`/netlink attach path.
