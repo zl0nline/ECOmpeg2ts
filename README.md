@@ -91,3 +91,11 @@ Continuity counter drops are counted per PID only for packets carrying payload.
 Adaptation-only packets do not advance the expected counter. Packets with the
 adaptation-field discontinuity indicator reset the PID expectation and are
 counted separately.
+
+## Experimental TC/eBPF Mode
+
+For many simultaneous streams on small ARM boards, the experimental
+`ecompeg2ts-tc` command can attach a TC ingress eBPF program and read aggregated
+counters from BPF maps instead of copying every stream into userspace.
+
+See [docs/ebpf/README.md](docs/ebpf/README.md).
