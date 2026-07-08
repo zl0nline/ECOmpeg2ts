@@ -23,6 +23,8 @@ func main() {
 		iface         = flag.String("iface", "", "network interface for multicast, optional")
 		filePath      = flag.String("file", "", "MPEG-TS file to analyze")
 		jsonMode      = flag.Bool("json", false, "emit JSON snapshots instead of the dashboard")
+		noClear       = flag.Bool("no-clear", false, "do not clear screen each tick (for SSH/tmux logging)")
+		sortMode      = flag.String("sort", "drops", "PID sort mode: drops, bitrate, pid")
 		interval      = flag.Duration("interval", time.Second, "dashboard or JSON refresh interval")
 	)
 	flag.Parse()
@@ -45,6 +47,13 @@ func main() {
 	defer ticker.Stop()
 
 	renderer := dashboard.New(os.Stdout, src.Name)
+	renderer.SetNoClear(*noClear)
+	switch *sortMode {
+	case "bitrate":
+		renderer.SetSortMode(dashboard.SortByBitrate)
+	case "pid":
+		renderer.SetSortMode(dashboard.SortByPID)
+	}
 	encoder := json.NewEncoder(os.Stdout)
 
 	for {

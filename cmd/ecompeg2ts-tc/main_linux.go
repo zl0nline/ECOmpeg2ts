@@ -16,6 +16,7 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
+	"github.com/vishvananda/netlink"
 	"github.com/zl0nline/ECOmpeg2ts/internal/input"
 )
 
@@ -69,12 +70,22 @@ type row struct {
 	Value pidStatsValue
 }
 
+// attachMode describes how the BPF program was attached so we can log it
+// and clean up properly on exit.
+type attachMode int
+
+const (
+	attachTCX attachMode = iota
+	attachClsact
+)
+
 func main() {
 	ifaceName := flag.String("iface", "", "interface to attach TC ingress program to, for example eth0")
 	objectPath := flag.String("object", "ecompeg2ts_tc_bpfel.o", "compiled eBPF object path")
 	interval := flag.Duration("interval", time.Second, "dashboard refresh interval")
 	var joins stringList
 	flag.Var(&joins, "join", "multicast source URL to join for IGMP, repeatable, for example udp://@239.3.1.1:1234")
+	preferClsact := flag.Bool("clsact", false, "prefer clsact/netlink attach even if TCX is available")
 	flag.Parse()
 
 	if *ifaceName == "" {
@@ -108,16 +119,20 @@ func main() {
 	}
 	defer objs.Close()
 
-	tc, err := link.AttachTCX(link.TCXOptions{
-		Interface: iface.Index,
-		Program:   objs.Program,
-		Attach:    ebpf.AttachTCXIngress,
-	})
+	// Attach BPF program: TCX (default) or clsact/netlink fallback.
+	mode, cleanup, err := attachBPF(iface, objs.Program, *preferClsact)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "attach TCX ingress: %v\n", err)
+		fmt.Fprintf(os.Stderr, "attach failed: %v\n", err)
 		os.Exit(1)
 	}
-	defer tc.Close()
+	defer cleanup()
+
+	switch mode {
+	case attachTCX:
+		fmt.Fprintf(os.Stderr, "attached via TCX ingress on %s\n", iface.Name)
+	case attachClsact:
+		fmt.Fprintf(os.Stderr, "attached via clsact/netlink ingress on %s (fallback)\n", iface.Name)
+	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
@@ -134,6 +149,95 @@ func main() {
 			return
 		}
 	}
+}
+
+// attachBPF tries TCX first (unless --clsact is set), then falls back to
+// clsact qdisc + netlink SchedCLS attach. Returns the attach mode, a cleanup
+// function, and any error.
+func attachBPF(iface *net.Interface, prog *ebpf.Program, preferClsact bool) (attachMode, func(), error) {
+	if !preferClsact {
+		tc, err := link.AttachTCX(link.TCXOptions{
+			Interface: iface.Index,
+			Program:   prog,
+			Attach:    ebpf.AttachTCXIngress,
+		})
+		if err == nil {
+			return attachTCX, func() { tc.Close() }, nil
+		}
+		fmt.Fprintf(os.Stderr, "TCX attach failed (%v), trying clsact/netlink fallback...\n", err)
+	}
+
+	// clsact/netlink fallback
+	nlLink, err := netlink.LinkByName(iface.Name)
+	if err != nil {
+		return 0, nil, fmt.Errorf("netlink: find interface %s: %w", iface.Name, err)
+	}
+
+	// Ensure a clsact qdisc exists. clsact is idempotent: adding when one
+	// already exists returns EEXIST, which we ignore.
+	clsact := &netlink.Clsact{QdiscAttrs: netlink.QdiscAttrs{
+		LinkIndex: nlLink.Attrs().Index,
+		Handle:    netlink.MakeHandle(0xffff, 0),
+		Parent:    netlink.HANDLE_CLSACT,
+	}}
+	if err := netlink.QdiscAdd(clsact); err != nil && !isExistErr(err) {
+		return 0, nil, fmt.Errorf("netlink: add clsact qdisc: %w", err)
+	}
+
+	// Attach the SchedCLS filter on clsact ingress.
+	// Ingress parent = (TC_H_CLSACT | TC_H_MIN_INGRESS) = HANDLE_MIN_INGRESS.
+	filter := &netlink.BpfFilter{
+		FilterAttrs: netlink.FilterAttrs{
+			LinkIndex: nlLink.Attrs().Index,
+			Parent:    netlink.HANDLE_MIN_INGRESS,
+			Handle:    netlink.MakeHandle(0, 1),
+			Protocol:  syscall.ETH_P_ALL,
+			Priority:  1,
+		},
+		Fd:           prog.FD(),
+		DirectAction: true,
+	}
+
+	if err := netlink.FilterAdd(filter); err != nil && !isExistErr(err) {
+		return 0, nil, fmt.Errorf("netlink: add SchedCLS filter: %w", err)
+	}
+
+	cleanup := func() {
+		// Filter removal is best-effort; qdisc removal auto-cleans filters.
+		_ = netlink.FilterDel(filter)
+	}
+
+	return attachClsact, cleanup, nil
+}
+
+// isExistErr returns true if the error indicates the object already exists.
+func isExistErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	return contains(err.Error(), "exists") || contains(err.Error(), "EEXIST") || errnoIsExist(err)
+}
+
+func errnoIsExist(err error) bool {
+	type errnof interface{ Errno() syscall.Errno }
+	if e, ok := err.(errnof); ok {
+		return e.Errno() == syscall.EEXIST
+	}
+	return false
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
+		(len(s) > 0 && len(substr) > 0 && findSubstring(s, substr)))
+}
+
+func findSubstring(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }
 
 func render(m *ebpf.Map, iface string) {
