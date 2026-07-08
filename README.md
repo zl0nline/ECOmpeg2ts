@@ -142,3 +142,149 @@ Continuity counter drops are counted per PID only for packets carrying payload.
 Adaptation-only packets do not advance the expected counter. Packets with the
 adaptation-field discontinuity indicator reset the PID expectation and are
 counted separately.
+
+## Описание на русском
+
+ECOmpeg2ts — userspace-анализатор MPEG-2 Transport Stream для Linux-роутеров,
+приставок и небольших ARM-плат. Он читает UDP, multicast или файл, отслеживает
+continuity counter по каждому PID и показывает живой консольный dashboard со
+статистикой packets, bitrate, drops, TEI и discontinuity.
+
+Проект начат под Amlogic S905x на Armbian Linux `6.18.37-ophub`, но не требует
+отдельного kernel module и не привязан к конкретной CPU-архитектуре.
+
+### Возможности
+
+- Вход из UDP, multicast и файла.
+- Resync по MPEG-TS sync byte.
+- Учёт continuity counter по каждому PID.
+- Счётчики drops, duplicates, TEI, discontinuity, scrambled, payload/adaptation.
+- Цветной ANSI dashboard с per-PID bitrate и drop-rate.
+- Сортировка PID-таблицы: `--sort drops|bitrate|pid`.
+- Режим `--no-clear` для логов в SSH/tmux.
+- JSON-lines режим для машинной обработки и интеграций.
+- Статические Linux-сборки под ARM64 и AMD64.
+
+### Сборка
+
+```sh
+make test
+make build
+make linux-arm64
+make linux-amd64
+```
+
+Готовые бинарники складываются в `dist/`.
+
+#### eBPF / TC режим, только Linux
+
+```sh
+make ebpf-object          # standard: 8 TS packets per UDP (1500 MTU)
+make ebpf-object-jumbo    # jumbo: 16 TS packets per UDP (jumbo frames)
+make linux-arm64-tc       # ecompeg2ts-tc для ARM64
+```
+
+### Установка на Armbian ARM64
+
+Скачайте `ecompeg2ts-linux-arm64` из последнего GitHub release и установите на
+целевую коробку:
+
+```sh
+chmod +x ecompeg2ts-linux-arm64
+sudo install -m 0755 ecompeg2ts-linux-arm64 /usr/local/bin/ecompeg2ts
+ecompeg2ts --help
+```
+
+Пример systemd service:
+
+```sh
+sudo cp docs/systemd/ecompeg2ts.service /etc/systemd/system/ecompeg2ts.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now ecompeg2ts
+```
+
+Перед включением сервиса измените multicast group, port и interface под свой
+поток.
+
+### Примеры запуска
+
+Анализ UDP-потока на всех интерфейсах:
+
+```sh
+ecompeg2ts --udp :1234
+```
+
+Подключение к multicast group:
+
+```sh
+ecompeg2ts --multicast 239.10.10.10:1234 --iface eth0
+```
+
+IPTV-style URL. Интерфейс опционален; если его не указать, ОС выберет multicast
+interface сама:
+
+```sh
+ecompeg2ts --source udp://@239.3.1.1:1234
+ecompeg2ts udp://@239.3.1.1:1234
+```
+
+Чтение transport stream файла:
+
+```sh
+ecompeg2ts --file sample.ts
+```
+
+Вывод JSON lines вместо dashboard:
+
+```sh
+ecompeg2ts --udp :1234 --json
+```
+
+Dashboard с сортировкой и SSH-friendly выводом:
+
+```sh
+ecompeg2ts --multicast 239.3.1.1:1234 --sort bitrate
+ecompeg2ts --multicast 239.3.1.1:1234 --sort drops --no-clear
+```
+
+### TC/eBPF режим
+
+Для множества одновременных IPTV-потоков на небольших ARM-платах
+`ecompeg2ts-tc` цепляет TC ingress eBPF-программу и читает агрегированные
+счётчики из BPF maps вместо копирования каждого потока в userspace. Это снижает
+нагрузку на CPU примерно в 250 раз.
+
+Attach через TCX по умолчанию, с автоматическим fallback в `clsact`/netlink на
+старых ядрах:
+
+```sh
+sudo ./ecompeg2ts-tc --iface eth0 --object dist/ecompeg2ts_tc_bpfel.o --join udp://@239.3.1.1:1234
+```
+
+Принудительный `clsact`/netlink attach:
+
+```sh
+sudo ./ecompeg2ts-tc --iface eth0 --object dist/ecompeg2ts_tc_bpfel.o --clsact --join udp://@239.3.1.1:1234
+```
+
+Jumbo-вариант на 16 TS packets per UDP datagram:
+
+```sh
+sudo ./ecompeg2ts-tc --iface eth0 --object dist/ecompeg2ts_tc_bpfel_jumbo.o --join udp://@239.3.1.1:1234
+```
+
+Технические детали — в [docs/ebpf/README.md](docs/ebpf/README.md).
+
+#### Специальные BPF PID
+
+| PID | Значение |
+|-----|----------|
+| `0xfffe` | Oversized datagrams: `packets` = oversized UDP datagrams, `drops` = TS packets, которые не разобраны сверх лимита |
+| `0xffff` | Sync byte losses: счётчик `sync_losses` растёт, когда ожидаемый sync byte `0x47` отсутствует |
+
+### Замечания
+
+Continuity counter drops считаются по PID только для packets с payload.
+Adaptation-only packets не двигают ожидаемый counter. Packets с
+adaptation-field discontinuity indicator сбрасывают ожидание по PID и считаются
+отдельно.
