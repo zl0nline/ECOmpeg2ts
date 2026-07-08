@@ -13,13 +13,21 @@ on small ARM boards while monitoring many simultaneous streams.
 The BPF object must be built on Linux with a clang that supports the BPF target:
 
 ```sh
-clang -O2 -g -target bpf -I/usr/include/$(uname -m)-linux-gnu -c bpf/ecompeg2ts_tc.c -o ecompeg2ts_tc_bpfel.o
+make ebpf-object
+```
+
+The standard object parses up to 8 TS packets per UDP datagram, which covers
+ordinary IPTV over 1500 MTU. To build a jumbo variant with 16 TS packets per UDP
+datagram:
+
+```sh
+make ebpf-object-jumbo
 ```
 
 ## Build The Loader
 
 ```sh
-GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o ecompeg2ts-tc ./cmd/ecompeg2ts-tc
+make linux-arm64-tc
 ```
 
 ## Run
@@ -40,6 +48,25 @@ sudo ./ecompeg2ts-tc --iface eth0 --object ./ecompeg2ts_tc_bpfel.o --join udp://
 Repeat `--join` for multiple multicast groups. The dummy socket is only used to
 keep membership alive; MPEG-TS counters still come from the TC/eBPF map.
 
-The first version uses TCX attach, which is available on recent kernels. The
-target Armbian `6.18.37-ophub` kernel should be new enough. If TCX attach fails,
-the fallback will be a later traditional `clsact`/netlink attach path.
+By default the loader tries TCX ingress first. If TCX is unavailable, it falls
+back to traditional `clsact` qdisc + netlink SchedCLS attach without shelling
+out to `tc`. Use `--clsact` to force the fallback path:
+
+```sh
+sudo ./ecompeg2ts-tc --iface eth0 --object ./ecompeg2ts_tc_bpfel.o --clsact
+```
+
+The dashboard reports the attach mode as either `tcx` or `clsact`.
+
+## Oversized Datagrams
+
+The BPF parser is compiled with a fixed `MAX_TS_PACKETS_PER_UDP` so the verifier
+can prove the loop. Datagrams larger than that limit are capped for parsing and
+reported under reserved PID `0xfffe`:
+
+- `packets`: oversized UDP datagrams seen.
+- `drops`: TS packets left unparsed beyond the compiled limit.
+
+Use the standard object for normal IPTV streams and the jumbo object only when
+the target kernel/verifier accepts it and the network really carries larger UDP
+payloads.
