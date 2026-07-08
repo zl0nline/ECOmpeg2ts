@@ -24,5 +24,9 @@ ebpf-object:
 	mkdir -p dist
 	clang -O2 -g -target bpf -I/usr/include/$$(uname -m)-linux-gnu -c bpf/ecompeg2ts_tc.c -o dist/ecompeg2ts_tc_bpfel.o
 
+ebpf-object-jumbo:
+	mkdir -p dist
+	clang -O2 -g -target bpf -I/usr/include/$$(uname -m)-linux-gnu -DMAX_TS_PACKETS_PER_UDP=16 -c bpf/ecompeg2ts_tc.c -o dist/ecompeg2ts_tc_bpfel_jumbo.o
+
 clean:
 	rm -rf bin dist
