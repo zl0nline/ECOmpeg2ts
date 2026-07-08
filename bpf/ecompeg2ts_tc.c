@@ -154,12 +154,33 @@ int tc_mpeg2ts(struct __sk_buff *skb)
 	if (udp_len < sizeof(*udph))
 		return TC_ACT_OK;
 	__u32 payload_len = udp_len - sizeof(*udph);
-	if (payload_len > TS_PACKET_SIZE * MAX_TS_PACKETS_PER_UDP)
-		payload_len = TS_PACKET_SIZE * MAX_TS_PACKETS_PER_UDP;
+
+	/* Track oversized datagrams as PID 0xfffe */
+	__u32 capped_payload_len = payload_len;
+	if (capped_payload_len > TS_PACKET_SIZE * MAX_TS_PACKETS_PER_UDP) {
+		capped_payload_len = TS_PACKET_SIZE * MAX_TS_PACKETS_PER_UDP;
+
+		struct stream_pid_key oversize_key = {
+			.dst_ip = iph->daddr,
+			.dst_port = udph->dest,
+			.pid = 0xfffe,
+		};
+		struct pid_stats_value *os_stat = bpf_map_lookup_elem(&pid_stats, &oversize_key);
+		if (!os_stat) {
+			struct pid_stats_value init = {};
+			bpf_map_update_elem(&pid_stats, &oversize_key, &init, BPF_ANY);
+			os_stat = bpf_map_lookup_elem(&pid_stats, &oversize_key);
+		}
+		if (os_stat) {
+			__sync_fetch_and_add(&os_stat->packets, 1);
+			__u32 lost_ts = (payload_len - capped_payload_len) / TS_PACKET_SIZE;
+			__sync_fetch_and_add(&os_stat->drops, lost_ts);
+		}
+	}
 
 #pragma unroll
 	for (int i = 0; i < MAX_TS_PACKETS_PER_UDP; i++) {
-		if ((i + 1) * TS_PACKET_SIZE > payload_len)
+		if ((i + 1) * TS_PACKET_SIZE > capped_payload_len)
 			break;
 
 		unsigned char *pkt = payload + (i * TS_PACKET_SIZE);
