@@ -11,14 +11,15 @@ architecture.
 
 ## Features
 
-- UDP and multicast input.
-- File input for captures and regression tests.
+- UDP, multicast, and file input.
 - MPEG-TS sync-byte resynchronization.
 - Per-PID continuity counter tracking.
 - Drop, duplicate, TEI, discontinuity, scrambled, and payload/adaptation stats.
-- ANSI console dashboard with bitrate and drop history graphs.
-- JSON-lines mode for logging and integrations.
-- Static Linux ARM64 build target.
+- Colored ANSI console dashboard with per-PID bitrate and drop-rate columns.
+- Sortable PID table: `--sort drops|bitrate|pid`.
+- `--no-clear` mode for SSH/tmux logging.
+- JSON-lines mode for machine-readable output and integrations.
+- Static Linux ARM64 and AMD64 build targets.
 
 ## Build
 
@@ -26,9 +27,18 @@ architecture.
 make test
 make build
 make linux-arm64
+make linux-amd64
 ```
 
-The ARM64 binary will be written to `dist/ecompeg2ts-linux-arm64`.
+Binaries are written to `dist/`.
+
+### eBPF / TC Mode (Linux only)
+
+```sh
+make ebpf-object          # standard: 8 TS packets per UDP (1500 MTU)
+make ebpf-object-jumbo    # jumbo: 16 TS packets per UDP (jumbo frames)
+make linux-arm64-tc       # build ecompeg2ts-tc for ARM64
+```
 
 ## Install On Armbian ARM64
 
@@ -85,17 +95,50 @@ Emit JSON lines instead of dashboard:
 ecompeg2ts --udp :1234 --json
 ```
 
+Dashboard with sorting and SSH-friendly output:
+
+```sh
+ecompeg2ts --multicast 239.3.1.1:1234 --sort bitrate
+ecompeg2ts --multicast 239.3.1.1:1234 --sort drops --no-clear
+```
+
+## TC/eBPF Mode
+
+For many simultaneous streams on small ARM boards, `ecompeg2ts-tc` attaches a TC
+ingress eBPF program and reads aggregated counters from BPF maps instead of
+copying every stream into userspace. This reduces CPU usage by ~250x.
+
+Attach via TCX (default on modern kernels), with automatic clsact/netlink
+fallback for older kernels:
+
+```sh
+sudo ./ecompeg2ts-tc --iface eth0 --object dist/ecompeg2ts_tc_bpfel.o --join udp://@239.3.1.1:1234
+```
+
+Force clsact/netlink attach mode:
+
+```sh
+sudo ./ecompeg2ts-tc --iface eth0 --object dist/ecompeg2ts_tc_bpfel.o --clsact --join udp://@239.3.1.1:1234
+```
+
+Jumbo frame variant (16 TS packets per UDP datagram):
+
+```sh
+sudo ./ecompeg2ts-tc --iface eth0 --object dist/ecompeg2ts_tc_bpfel_jumbo.o --join udp://@239.3.1.1:1234
+```
+
+See [docs/ebpf/README.md](docs/ebpf/README.md) for technical details.
+
+### BPF Special PIDs
+
+| PID | Meaning |
+|-----|---------|
+| `0xfffe` | Oversized datagrams: `packets` = oversized UDP datagrams, `drops` = TS packets not parsed beyond the limit |
+| `0xffff` | Sync byte losses: `sync_losses` counter increments when expected sync byte `0x47` is missing |
+
 ## Notes
 
 Continuity counter drops are counted per PID only for packets carrying payload.
 Adaptation-only packets do not advance the expected counter. Packets with the
 adaptation-field discontinuity indicator reset the PID expectation and are
 counted separately.
-
-## Experimental TC/eBPF Mode
-
-For many simultaneous streams on small ARM boards, the experimental
-`ecompeg2ts-tc` command can attach a TC ingress eBPF program and read aggregated
-counters from BPF maps instead of copying every stream into userspace.
-
-See [docs/ebpf/README.md](docs/ebpf/README.md).
