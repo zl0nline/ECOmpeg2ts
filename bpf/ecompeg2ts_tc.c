@@ -41,6 +41,8 @@ struct pid_stats_value {
 	__u64 tei_errors;
 	__u64 discontinuities;
 	__u64 sync_losses;
+	__u64 adaptation_only;
+	__u64 payload_packets;
 	__u8 last_cc;
 	__u8 seen;
 	__u8 reserved0;
@@ -91,6 +93,12 @@ static __always_inline void process_ts(unsigned char *p, __u32 dst_ip, __u16 dst
 
 	if (tei)
 		__sync_fetch_and_add(&stats->tei_errors, 1);
+
+	if (afc == 2)
+		__sync_fetch_and_add(&stats->adaptation_only, 1);
+
+	if (has_payload)
+		__sync_fetch_and_add(&stats->payload_packets, 1);
 
 	if (discontinuity) {
 		__sync_fetch_and_add(&stats->discontinuities, 1);

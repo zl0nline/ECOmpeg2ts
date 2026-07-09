@@ -3,13 +3,12 @@
 package main
 
 import (
-	"encoding/binary"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"net"
 	"os"
 	"os/signal"
-	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -17,7 +16,9 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/vishvananda/netlink"
+	"github.com/zl0nline/ECOmpeg2ts/internal/dashboard"
 	"github.com/zl0nline/ECOmpeg2ts/internal/input"
+	"github.com/zl0nline/ECOmpeg2ts/internal/mpegts"
 )
 
 type stringList []string
@@ -58,6 +59,8 @@ type pidStatsValue struct {
 	TEIErrors       uint64
 	Discontinuities uint64
 	SyncLosses      uint64
+	AdaptationOnly  uint64
+	PayloadPackets  uint64
 	LastCC          uint8
 	Seen            uint8
 	Reserved0       uint8
@@ -79,10 +82,24 @@ const (
 	attachClsact
 )
 
+func (m attachMode) String() string {
+	switch m {
+	case attachTCX:
+		return "tcx"
+	case attachClsact:
+		return "clsact"
+	default:
+		return "unknown"
+	}
+}
+
 func main() {
 	ifaceName := flag.String("iface", "", "interface to attach TC ingress program to, for example eth0")
 	objectPath := flag.String("object", "ecompeg2ts_tc_bpfel.o", "compiled eBPF object path")
 	interval := flag.Duration("interval", time.Second, "dashboard refresh interval")
+	jsonMode := flag.Bool("json", false, "emit JSON snapshots instead of the dashboard")
+	noClear := flag.Bool("no-clear", false, "do not clear screen each tick (for SSH/tmux logging)")
+	sortMode := flag.String("sort", "drops", "PID sort mode: drops, bitrate, pid")
 	var joins stringList
 	flag.Var(&joins, "join", "multicast source URL to join for IGMP, repeatable, for example udp://@239.3.1.1:1234")
 	preferClsact := flag.Bool("clsact", false, "prefer clsact/netlink attach even if TCX is available")
@@ -140,10 +157,30 @@ func main() {
 	ticker := time.NewTicker(*interval)
 	defer ticker.Stop()
 
+	startedAt := time.Now()
+	sourceName := fmt.Sprintf("tc/eBPF iface=%s attach=%s", iface.Name, mode.String())
+	renderer := dashboard.New(os.Stdout, sourceName)
+	renderer.SetNoClear(*noClear)
+	switch *sortMode {
+	case "bitrate":
+		renderer.SetSortMode(dashboard.SortByBitrate)
+	case "pid":
+		renderer.SetSortMode(dashboard.SortByPID)
+	}
+	encoder := json.NewEncoder(os.Stdout)
+
 	for {
 		select {
 		case <-ticker.C:
-			render(objs.PIDMap, *ifaceName)
+			s := snapshotFromMap(objs.PIDMap, startedAt)
+			if *jsonMode {
+				if err := encoder.Encode(s); err != nil {
+					fmt.Fprintln(os.Stderr, err)
+					os.Exit(1)
+				}
+			} else {
+				renderer.Render(s)
+			}
 		case <-sigCh:
 			fmt.Fprintln(os.Stderr, "detaching")
 			return
@@ -240,37 +277,45 @@ func findSubstring(s, substr string) bool {
 	return false
 }
 
-func render(m *ebpf.Map, iface string) {
+func snapshotFromMap(m *ebpf.Map, startedAt time.Time) mpegts.Snapshot {
 	rows := readRows(m)
-	sort.Slice(rows, func(i, j int) bool {
-		if rows[i].Value.Drops == rows[j].Value.Drops {
-			return rows[i].Value.Packets > rows[j].Value.Packets
-		}
-		return rows[i].Value.Drops > rows[j].Value.Drops
-	})
+	byPID := make(map[uint16]*mpegts.PIDStats, len(rows))
+	s := mpegts.Snapshot{
+		StartedAt: startedAt,
+		TakenAt:   time.Now(),
+	}
 
-	fmt.Print("\033[2J\033[H")
-	fmt.Printf("ECOmpeg2ts TC/eBPF  iface=%s  streams/pids=%d\n", iface, len(rows))
-	fmt.Println("dst              port   pid     packets      drops  dup    tei   disc  sync")
-	fmt.Println("----------------------------------------------------------------------------")
-	limit := 24
-	if len(rows) < limit {
-		limit = len(rows)
+	for _, r := range rows {
+		p := byPID[r.Key.PID]
+		if p == nil {
+			p = &mpegts.PIDStats{PID: r.Key.PID}
+			byPID[r.Key.PID] = p
+		}
+
+		bytes := r.Value.Packets * mpegts.PacketSize
+		p.Packets += r.Value.Packets
+		p.Bytes += bytes
+		p.Drops += r.Value.Drops
+		p.Duplicates += r.Value.Duplicates
+		p.TEIErrors += r.Value.TEIErrors
+		p.Discontinuities += r.Value.Discontinuities
+		p.AdaptationOnly += r.Value.AdaptationOnly
+		p.PayloadPackets += r.Value.PayloadPackets
+
+		s.Packets += r.Value.Packets
+		s.Bytes += bytes
+		s.Drops += r.Value.Drops
+		s.Duplicates += r.Value.Duplicates
+		s.TEIErrors += r.Value.TEIErrors
+		s.Discontinuities += r.Value.Discontinuities
+		s.SyncLosses += r.Value.SyncLosses
 	}
-	for i := 0; i < limit; i++ {
-		r := rows[i]
-		fmt.Printf("%-15s  %-5d  0x%04x  %10d  %7d  %5d  %5d  %5d  %4d\n",
-			ipv4FromKey(r.Key.DstIP),
-			ntohs(r.Key.DstPort),
-			r.Key.PID,
-			r.Value.Packets,
-			r.Value.Drops,
-			r.Value.Duplicates,
-			r.Value.TEIErrors,
-			r.Value.Discontinuities,
-			r.Value.SyncLosses,
-		)
+
+	s.PIDs = make([]mpegts.PIDStats, 0, len(byPID))
+	for _, p := range byPID {
+		s.PIDs = append(s.PIDs, *p)
 	}
+	return s
 }
 
 func readRows(m *ebpf.Map) []row {
@@ -282,16 +327,6 @@ func readRows(m *ebpf.Map) []row {
 		rows = append(rows, row{Key: key, Value: value})
 	}
 	return rows
-}
-
-func ipv4FromKey(v uint32) net.IP {
-	var b [4]byte
-	binary.LittleEndian.PutUint32(b[:], v)
-	return net.IPv4(b[0], b[1], b[2], b[3])
-}
-
-func ntohs(v uint16) uint16 {
-	return (v << 8) | (v >> 8)
 }
 
 func openJoins(rawSources []string, iface *net.Interface) ([]*net.UDPConn, error) {

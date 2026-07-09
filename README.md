@@ -115,6 +115,9 @@ fallback for older kernels:
 sudo ./ecompeg2ts-tc --iface eth0 --object dist/ecompeg2ts_tc_bpfel.o --join udp://@239.3.1.1:1234
 ```
 
+The TC/eBPF loader uses the same coloured dashboard renderer as `ecompeg2ts`,
+including `--sort drops|bitrate|pid`, `--no-clear`, and `--json`.
+
 Force clsact/netlink attach mode:
 
 ```sh
@@ -260,6 +263,9 @@ Attach через TCX по умолчанию, с автоматическим f
 ```sh
 sudo ./ecompeg2ts-tc --iface eth0 --object dist/ecompeg2ts_tc_bpfel.o --join udp://@239.3.1.1:1234
 ```
+
+TC/eBPF loader использует тот же цветной dashboard renderer, что и
+`ecompeg2ts`: доступны `--sort drops|bitrate|pid`, `--no-clear` и `--json`.
 
 Принудительный `clsact`/netlink attach:
 

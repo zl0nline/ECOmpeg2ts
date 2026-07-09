@@ -57,6 +57,9 @@ sudo ./ecompeg2ts-tc --iface eth0 --object ./ecompeg2ts_tc_bpfel.o --clsact
 ```
 
 The dashboard reports the attach mode as either `tcx` or `clsact`.
+It uses the shared `ecompeg2ts` dashboard renderer, so `--sort
+drops|bitrate|pid`, `--no-clear`, and `--json` behave the same way in TC/eBPF
+mode.
 
 ## Oversized Datagrams
 
